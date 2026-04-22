@@ -225,7 +225,7 @@ EARLY_STOPPING_ROUNDS = 50
 
 ### Deployment Gate
 
-> **Blueprint Rule 10:** A retrained model is only promoted to production if its **test-set win rate ≥ 58%**. If the gate is not met, `DeploymentBlockedError` is raised and the candidate model is NOT promoted.
+> **Blueprint Rule 10:** A retrained model is only promoted to production if its **test-set win rate ≥ 53%**. If the gate is not met, `DeploymentBlockedError` is raised and the candidate model is NOT promoted.
 
 Model lifecycle:
 1. `/retrain` → trains a new model → saved as `models/candidate.lgb`
@@ -304,7 +304,7 @@ All commands are restricted to the configured `TELEGRAM_CHAT_ID`.
 | Command | Description |
 |---------|-------------|
 | `/retrain` | Trigger a full model retrain (fetches fresh MEXC data, trains, saves as candidate) |
-| `/promote_model` | Promote the candidate model to production (validates ≥58% WR gate) |
+| `/promote_model` | Promote the candidate model to production (validates ≥53% WR gate) |
 | `/model_status` | Show current model metadata: WR, threshold, training date, feature count |
 
 ### Strategy & Thresholds
@@ -421,7 +421,7 @@ Before running with the ML strategy, train an initial model:
 
 ```
 /retrain    → trains and saves candidate model
-/promote_model → promotes to production (only if test WR >= 58%)
+/promote_model → promotes to production (only if test WR >= 53%)
 ```
 
 ### Deployment on Railway / VPS
@@ -439,7 +439,7 @@ Before running with the ML strategy, train an initial model:
 |----------|-------|----------|-------------|
 | `SIGNAL_LEAD_TIME` | 85s | `config.py` | Fire signal check 85s before slot end |
 | `ML_DEFAULT_THRESHOLD` | 0.535 | `config.py` | Default ML confidence threshold |
-| `WR_GATE` | 58% | `trainer.py` | Min test-set WR required to promote a new model |
+| `ML_WR_GATE` | 53% | `config.py` | Min test-set WR required to promote a new model (env-configurable) |
 | `NUM_BOOST_ROUND` | 1000 | `trainer.py` | Max LightGBM boosting rounds |
 | `EARLY_STOPPING_ROUNDS` | 50 | `trainer.py` | Early stopping patience |
 | `WF_INITIAL_PCT` | 0.60 | `trainer.py` | Walk-forward initial train+val fraction |

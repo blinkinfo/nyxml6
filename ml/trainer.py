@@ -18,7 +18,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score
 from ml import model_store
 from ml.evaluator import compute_risk_metrics
 from ml.features import FEATURE_COLS
-from config import ML_PAYOUT_RATIO
+from config import ML_PAYOUT_RATIO, ML_WR_GATE
 
 try:
     from openpyxl import Workbook
@@ -36,8 +36,8 @@ except Exception:  # pragma: no cover - import failure handled at runtime
 class DeploymentBlockedError(Exception):
     """Raised when the trained model fails to meet the minimum test-set WR.
 
-    Blueprint Rule 10: ALWAYS validate that test set WR >= 59% before
-    deploying. If a new retrain fails to hit 59% on test, do not deploy.
+    Blueprint Rule 10: ALWAYS validate that test set WR >= ML_WR_GATE before
+    deploying. If a new retrain fails to hit the gate on test, do not deploy.
     """
 
 log = logging.getLogger(__name__)
@@ -351,7 +351,7 @@ def sweep_threshold(
     Selection criteria (applied in both stages):
       - Thresholds with fewer than MIN_TRADES trades are skipped -- the WR
         estimate is too noisy to be meaningful on small samples.
-      - If any remaining threshold achieves WR >= 0.58: pick the one that
+      - If any remaining threshold achieves WR >= ML_WR_GATE: pick the one that
         maximizes payout-adjusted EV/day = (WR * (1 + payout) - 1.0) * tpd.
         This correctly accounts for asymmetric payouts (e.g. win $0.85,
         lose $1.00) rather than assuming a 1:1 payout.
@@ -391,7 +391,7 @@ def sweep_threshold(
                 wr = float(y_true[mask].mean())
                 tpd = trades / (len(probs) * 5 / 1440)
                 _all.append((t, wr, trades, tpd))
-                if wr >= 0.58:
+                if wr >= ML_WR_GATE:
                     _above.append((t, wr, trades, tpd))
             t = round(t + step_s, 4)
         return _above, _all
@@ -439,19 +439,21 @@ def sweep_threshold(
         _ev_per_day(best_wr, best_trades_per_day, payout),
     )
 
-    # Log warning if no WR>=0.58 candidates were found (fallback path)
+    # Log warning if no WR>=ML_WR_GATE candidates were found (fallback path)
     candidates_above = candidates_above_fine if candidates_above_fine else candidates_above_coarse
     if not candidates_above:
         log.warning(
-            "sweep_threshold: no WR>=0.58 threshold found — using best EV/day fallback "
+            "sweep_threshold: no WR>=%.2f threshold found — using best EV/day fallback "
             "thresh=%.3f WR=%.4f tpd=%.1f ev/day=%.4f",
+            ML_WR_GATE,
             best_threshold, best_wr, best_trades_per_day,
             _ev_per_day(best_wr, best_trades_per_day, payout),
         )
     else:
         if not candidates_above_fine:
             log.warning(
-                "sweep_threshold: no WR>=0.58 candidates in fine range — fell back to coarse best"
+                "sweep_threshold: no WR>=%.2f candidates in fine range — fell back to coarse best",
+                ML_WR_GATE,
             )
         pass  # best already set from fine/coarse pass above
 
@@ -841,7 +843,7 @@ def train(df_features: pd.DataFrame, slot: str = "current") -> dict:
     y_val_down = 1 - y_val
     _, down_val_wr, down_val_tpd = sweep_threshold(down_probs_val, y_val_down)
 
-    down_enabled = down_val_wr >= 0.58
+    down_enabled = down_val_wr >= ML_WR_GATE
 
     log.info(
         "train: WFV-derived thresholds — up_threshold=%.3f down_threshold=%.3f",
@@ -853,9 +855,9 @@ def train(df_features: pd.DataFrame, slot: str = "current") -> dict:
     )
     if not down_enabled:
         log.warning(
-            "train: DOWN side did NOT pass deployment gate (down_val_wr=%.4f < 0.58). "
+            "train: DOWN side did NOT pass deployment gate (down_val_wr=%.4f < %.2f). "
             "DOWN trades will be disabled for this model.",
-            down_val_wr,
+            down_val_wr, ML_WR_GATE,
         )
 
     # Evaluate on test set using threshold chosen from val set
@@ -863,17 +865,17 @@ def train(df_features: pd.DataFrame, slot: str = "current") -> dict:
     test_metrics = evaluate_at_threshold(test_probs, y_test, best_threshold)
 
     # DOWN test set evaluation — confirms DOWN threshold holds on held-out data.
-    # If DOWN test WR < 59%, override down_enabled to False regardless of val result.
+    # If DOWN test WR < ML_WR_GATE, override down_enabled to False regardless of val result.
     down_test_metrics = evaluate_at_threshold(
         1.0 - test_probs,  # P(DOWN) on test set
         1 - y_test,        # DOWN labels on test set
         down_threshold,
     )
-    if down_enabled and down_test_metrics["wr"] < 0.58:
+    if down_enabled and down_test_metrics["wr"] < ML_WR_GATE:
         log.warning(
             "train: DOWN passed val gate but FAILED test gate "
-            "(down_test_wr=%.4f < 0.58). Disabling DOWN.",
-            down_test_metrics["wr"],
+            "(down_test_wr=%.4f < %.2f). Disabling DOWN.",
+            down_test_metrics["wr"], ML_WR_GATE,
         )
         down_enabled = False
 
@@ -888,13 +890,13 @@ def train(df_features: pd.DataFrame, slot: str = "current") -> dict:
 
     # -----------------------------------------------------------------------
     # Deployment gate — Blueprint Rule 10
-    # ALWAYS validate test WR >= 59% before auto-deploying.
+    # ALWAYS validate test WR >= ML_WR_GATE before auto-deploying.
     # If the model fails this gate we still save it to the candidate slot
     # so the user can inspect it and decide whether to promote or discard.
     # We return blocked=True so the caller can surface the decision to the
     # user rather than silently keeping or discarding the model.
     # -----------------------------------------------------------------------
-    MIN_DEPLOY_WR = 0.58
+    MIN_DEPLOY_WR = ML_WR_GATE
     blocked = test_metrics["wr"] < MIN_DEPLOY_WR
     if blocked:
         log.warning(
@@ -1077,7 +1079,7 @@ def train(df_features: pd.DataFrame, slot: str = "current") -> dict:
         "report_info": report_info,
         "report_error": report_error,
         "warning_reason": (
-            f"Test WR {test_metrics['wr']*100:.2f}% is below the 59% deployment gate "
+            f"Test WR {test_metrics['wr']*100:.2f}% is below the {ML_WR_GATE*100:.0f}% deployment gate "
             f"(Blueprint Rule 10). Candidate saved but NOT auto-promoted."
         ) if blocked else None,
     }

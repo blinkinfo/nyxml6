@@ -232,7 +232,7 @@ def pattern_keyboard() -> InlineKeyboardMarkup:
 
 def down_override_keyboard() -> InlineKeyboardMarkup:
     """Shown after an auto-promote (or force-promote) when the DOWN side failed
-    its own 59 % gate.
+    its own WR gate.
 
     The UP model has already been promoted to current.  The user now chooses
     whether to enable the DOWN signal anyway or to leave it disabled.
@@ -247,7 +247,7 @@ def down_override_keyboard() -> InlineKeyboardMarkup:
 
 
 def retrain_blocked_keyboard() -> InlineKeyboardMarkup:
-    """Shown after a retrain that failed the 59% deployment gate.
+    """Shown after a retrain that failed the WR deployment gate.
 
     Candidate is already saved — user picks Promote Anyway or Discard.
     """
