@@ -204,20 +204,35 @@ def build_features(
     ts_n1 = df5["timestamp"].shift(1)
 
     # -----------------------------------------------------------------------
-    # 15m features — merge_asof backward on ts_n1
+    # 15m features — merge_asof backward on ts_n1 (closed-candle aligned)
     # -----------------------------------------------------------------------
     atr15 = compute_atr14(df15)
     df15["body_ratio_15m"] = (df15["close"] - df15["open"]) / atr15
     df15["dir_15m"] = np.sign(df15["close"] - df15["open"])
     df15["volume_ratio_15m"] = df15["volume"] / df15["volume"].rolling(20, min_periods=2).mean()
 
-    r15 = _asof_backward(ts_n1, df15, ["body_ratio_15m", "dir_15m", "volume_ratio_15m"])
+    # IMPORTANT: shift HTF features by one full HTF bar before merging.
+    #
+    # Why:
+    #   ts_n1 is a 5m timestamp.  If ts_n1 falls inside an in-progress 15m bar
+    #   (same open timestamp, not yet closed), merging unshifted 15m values would
+    #   use that bar's final OHLCV-derived feature values in training, which leaks
+    #   information not available at live inference time.
+    #
+    # Contract:
+    #   At each 5m row i, 15m context must reflect the LAST FULLY CLOSED 15m bar
+    #   as of ts_n1.  Applying shift(1) on 15m feature columns enforces this.
+    df15_closed = df15[["timestamp", "body_ratio_15m", "dir_15m", "volume_ratio_15m"]].copy()
+    for _c in ["body_ratio_15m", "dir_15m", "volume_ratio_15m"]:
+        df15_closed[_c] = df15_closed[_c].shift(1)
+
+    r15 = _asof_backward(ts_n1, df15_closed, ["body_ratio_15m", "dir_15m", "volume_ratio_15m"])
     df5["body_ratio_15m"] = r15["body_ratio_15m"].values
     df5["dir_15m"] = r15["dir_15m"].values
     df5["volume_ratio_15m"] = r15["volume_ratio_15m"].values
 
     # -----------------------------------------------------------------------
-    # 1h features — same merge_asof pattern
+    # 1h features — same closed-candle merge_asof pattern
     # -----------------------------------------------------------------------
     atr1h = compute_atr14(df1h)
     df1h["body_ratio_1h"] = (df1h["close"] - df1h["open"]) / atr1h
@@ -225,7 +240,12 @@ def build_features(
     ema9 = df1h["close"].ewm(span=9, adjust=False).mean()
     df1h["ema9_slope_1h"] = (ema9 - ema9.shift(1)) / atr1h
 
-    r1h = _asof_backward(ts_n1, df1h, ["body_ratio_1h", "dir_1h", "ema9_slope_1h"])
+    # Same reasoning as 15m: use only last fully-closed 1h context as of ts_n1.
+    df1h_closed = df1h[["timestamp", "body_ratio_1h", "dir_1h", "ema9_slope_1h"]].copy()
+    for _c in ["body_ratio_1h", "dir_1h", "ema9_slope_1h"]:
+        df1h_closed[_c] = df1h_closed[_c].shift(1)
+
+    r1h = _asof_backward(ts_n1, df1h_closed, ["body_ratio_1h", "dir_1h", "ema9_slope_1h"])
     df5["body_ratio_1h"] = r1h["body_ratio_1h"].values
     df5["dir_1h"] = r1h["dir_1h"].values
     df5["ema9_slope_1h"] = r1h["ema9_slope_1h"].values

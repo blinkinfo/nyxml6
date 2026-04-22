@@ -70,6 +70,70 @@ def test_merge_asof_no_future_leak():
     assert merged['val'].iloc[0] == 2
 
 
+def test_htf_context_uses_last_closed_15m_bar():
+    """15m context must be aligned to the last CLOSED 15m bar at ts_n1.
+
+    We enforce this by shifting 15m feature columns by one bar before asof-merge.
+    """
+    from ml.features import _asof_backward
+
+    # Synthetic 15m feature series keyed by candle OPEN timestamp
+    right = pd.DataFrame({
+        "timestamp": pd.to_datetime([
+            "2025-01-01 09:00:00+00:00",
+            "2025-01-01 09:15:00+00:00",
+            "2025-01-01 09:30:00+00:00",
+        ]),
+        "body_ratio_15m": [10.0, 20.0, 30.0],
+    })
+
+    # Closed-candle contract: shift(1) before merge
+    right["body_ratio_15m"] = right["body_ratio_15m"].shift(1)
+
+    left_ts = pd.Series(pd.to_datetime([
+        "2025-01-01 09:05:00+00:00",  # inside 09:00 bar -> no prior closed bar in this mini fixture
+        "2025-01-01 09:15:00+00:00",  # open of 09:15 bar -> should map to 09:00 closed value (10)
+        "2025-01-01 09:29:00+00:00",  # still inside 09:15 bar -> still 10
+        "2025-01-01 09:30:00+00:00",  # open of 09:30 bar -> maps to 20
+    ]))
+
+    out = _asof_backward(left_ts, right, ["body_ratio_15m"])
+
+    assert pd.isna(out["body_ratio_15m"].iloc[0])
+    assert out["body_ratio_15m"].iloc[1] == 10.0
+    assert out["body_ratio_15m"].iloc[2] == 10.0
+    assert out["body_ratio_15m"].iloc[3] == 20.0
+
+
+def test_htf_context_uses_last_closed_1h_bar():
+    """1h context must be aligned to the last CLOSED 1h bar at ts_n1."""
+    from ml.features import _asof_backward
+
+    right = pd.DataFrame({
+        "timestamp": pd.to_datetime([
+            "2025-01-01 10:00:00+00:00",
+            "2025-01-01 11:00:00+00:00",
+            "2025-01-01 12:00:00+00:00",
+        ]),
+        "dir_1h": [1.0, -1.0, 1.0],
+    })
+    right["dir_1h"] = right["dir_1h"].shift(1)
+
+    left_ts = pd.Series(pd.to_datetime([
+        "2025-01-01 10:10:00+00:00",
+        "2025-01-01 11:00:00+00:00",
+        "2025-01-01 11:59:00+00:00",
+        "2025-01-01 12:00:00+00:00",
+    ]))
+
+    out = _asof_backward(left_ts, right, ["dir_1h"])
+
+    assert pd.isna(out["dir_1h"].iloc[0])
+    assert out["dir_1h"].iloc[1] == 1.0
+    assert out["dir_1h"].iloc[2] == 1.0
+    assert out["dir_1h"].iloc[3] == -1.0
+
+
 def test_train_val_test_split():
     n = 1000
     train_end = int(n * 0.75)
