@@ -713,7 +713,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Also patch DB metadata so the flag survives container restarts
         try:
             import aiosqlite
-            import config as cfg
             import json as _json
             async with aiosqlite.connect(cfg.DB_PATH) as _db:
                 _cur = await _db.execute(
