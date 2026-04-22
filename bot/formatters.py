@@ -5,6 +5,7 @@ from __future__ import annotations
 import html as _html
 from typing import Any
 
+import config as cfg
 
 def _e(value: object) -> str:
     """Escape a value for safe inclusion in Telegram HTML messages."""
@@ -847,10 +848,11 @@ def format_model_status(slot: str, meta: dict, threshold: float) -> str:
     down_val_wr  = meta.get("down_val_wr")
     down_test_wr = meta.get("down_test_wr")
     down_tpd     = meta.get("down_test_tpd", meta.get("down_val_tpd", 0))
+    gate_pct = cfg.ML_WR_GATE * 100
 
     up_gate_pct  = meta.get("test_wr", 0) * 100
-    up_gate_icon = "\u2705" if up_gate_pct >= 58.0 else "\u274c"
-    up_gate_lbl  = "PASS" if up_gate_pct >= 58.0 else "FAIL"
+    up_gate_icon = "\u2705" if up_gate_pct >= gate_pct else "\u274c"
+    up_gate_lbl  = "PASS" if up_gate_pct >= gate_pct else "FAIL"
 
     if down_val_wr is not None and down_test_wr is not None:
         down_status_lbl = "ENABLED" if down_enabled else "DISABLED"
@@ -930,7 +932,7 @@ def format_retrain_started() -> str:
 
 
 def format_retrain_blocked(meta: dict, threshold: float) -> tuple[str, str | None]:
-    """Notification sent when retrain completes but fails the 59% deployment gate.
+    """Notification sent when retrain completes but fails the WR deployment gate.
 
     The candidate IS saved — the user must decide to promote or discard.
 
@@ -938,7 +940,7 @@ def format_retrain_blocked(meta: dict, threshold: float) -> tuple[str, str | Non
     *risk_message* is None when no risk data is available.
     Both messages must be sent with parse_mode='HTML'.
     """
-    _GATE = 0.58
+    _GATE = cfg.ML_WR_GATE
     down_enabled = meta.get("down_enabled", False)
     down_thr     = meta.get("down_threshold", round(1.0 - threshold, 4))
     down_val_wr  = meta.get("down_val_wr")
@@ -1012,7 +1014,7 @@ def format_retrain_complete(meta: dict, threshold: float) -> tuple[str, str | No
     *risk_message* is None when no risk data is available.
     Both messages must be sent with parse_mode='HTML'.
     """
-    _GATE = 0.58
+    _GATE = cfg.ML_WR_GATE
     down_enabled = meta.get("down_enabled", False)
     down_thr     = meta.get("down_threshold", round(1.0 - threshold, 4))
     down_val_wr  = meta.get("down_val_wr")

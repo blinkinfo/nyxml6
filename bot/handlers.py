@@ -670,7 +670,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             threshold = await queries.get_ml_threshold()
             text = format_model_status("current (force-promoted)", meta, threshold)
             await query.message.reply_text(
-                f"{text}\n\n&#x26A0;&#xFE0F; Candidate promoted despite failing the 59% gate. "
+                f"{text}\n\n&#x26A0;&#xFE0F; Candidate promoted despite failing the {cfg.ML_WR_GATE*100:.0f}% gate. "
                 "Monitor live performance closely.",
                 parse_mode="HTML",
                 reply_markup=ml_menu(),
@@ -682,7 +682,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 down_test_wr = meta.get("down_test_wr", 0.0)
                 down_thr = meta.get("down_threshold", "n/a")
                 await query.message.reply_text(
-                    f"\u2139\ufe0f <b>DOWN signal did not pass the 59\u202f% gate</b>\n\n"
+                    f"\u2139\ufe0f <b>DOWN signal did not pass the {cfg.ML_WR_GATE*100:.0f}\u202f% gate</b>\n\n"
                     f"Val win-rate: <b>{down_val_wr:.1%}</b>  |  "
                     f"Test win-rate: <b>{down_test_wr:.1%}</b>  |  "
                     f"Threshold: <b>{down_thr}</b>\n\n"
@@ -713,7 +713,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Also patch DB metadata so the flag survives container restarts
         try:
             import aiosqlite
-            import config as cfg
             import json as _json
             async with aiosqlite.connect(cfg.DB_PATH) as _db:
                 _cur = await _db.execute(
@@ -734,7 +733,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text(
             "\u2705 <b>DOWN signal override enabled.</b>\n\n"
             "The DOWN model will fire on the next signal check even though it did not "
-            "pass the 59\u202f% gate. Monitor performance closely.",
+            f"pass the {cfg.ML_WR_GATE*100:.0f}\u202f% gate. Monitor performance closely.",
             parse_mode="HTML",
             reply_markup=ml_menu(),
         )
@@ -747,7 +746,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text(
             "\u274c <b>DOWN signal remains disabled.</b>\n\n"
             "The UP model is live. The DOWN side will not fire until a retrain "
-            "produces a candidate that passes its own 59\u202f% gate.",
+            f"produces a candidate that passes its own {cfg.ML_WR_GATE*100:.0f}\u202f% gate.",
             parse_mode="HTML",
             reply_markup=ml_menu(),
         )
@@ -1292,7 +1291,7 @@ async def _retrain_background(application, chat_id) -> None:
             log.warning("Retrain: failed to save candidate to DB: %s", db_exc)
 
         if result.get("blocked"):
-            # UP side failed the 59% gate — saved to candidate, user decides
+            # UP side failed the WR gate — saved to candidate, user decides
             log.warning(
                 "Retrain: candidate blocked by deployment gate. "
                 "val_wr=%.4f test_wr=%.4f threshold=%.3f | "
@@ -1366,7 +1365,7 @@ async def _retrain_background(application, chat_id) -> None:
             if not down_enabled:
                 from bot.keyboards import down_override_keyboard as _down_kb
                 await notify(
-                    f"\u2139\ufe0f <b>DOWN signal did not pass the 59\u202f% gate</b>\n\n"
+                    f"\u2139\ufe0f <b>DOWN signal did not pass the {cfg.ML_WR_GATE*100:.0f}\u202f% gate</b>\n\n"
                     f"Val win-rate: <b>{down_val_wr:.1%}</b>  |  "
                     f"Test win-rate: <b>{down_test_wr:.1%}</b>  |  "
                     f"Threshold: <b>{down_threshold}</b>\n\n"
