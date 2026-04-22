@@ -685,3 +685,123 @@ def test_cvd_delta_norm_parity():
     # Training and live must match
     np.testing.assert_allclose(live_val, train_val, atol=1e-9,
         err_msg=f"cvd_delta_norm mismatch: train={train_val} live={live_val}")
+
+
+def test_15m_feature_uses_last_closed_candle_not_forming_candle():
+    """15m context must not leak partially formed 15m candle values.
+
+    We craft a 15m frame where the candle stamped 00:45 has an extreme body.
+    For the 5m row with timestamp 00:50 (ts_n1=00:45), causal logic must use the
+    PREVIOUS closed 15m candle (00:30), not the still-forming 00:45 candle.
+    """
+    from ml.features import build_features
+
+    ts5 = pd.date_range("2026-01-01 00:00:00", periods=520, freq="5min", tz="UTC")
+    base_close = np.linspace(100.0, 120.0, len(ts5))
+    df5 = pd.DataFrame({
+        "timestamp": ts5,
+        "open": base_close - 0.1,
+        "high": base_close + 0.2,
+        "low": base_close - 0.2,
+        "close": base_close,
+        "volume": np.full(len(ts5), 1000.0),
+    })
+
+    ts15 = pd.date_range(ts5.min() - pd.Timedelta("2h"), ts5.max() + pd.Timedelta("2h"), freq="15min", tz="UTC")
+    df15 = pd.DataFrame({
+        "timestamp": ts15,
+        "open": np.full(len(ts15), 100.0),
+        "high": np.full(len(ts15), 101.0),
+        "low": np.full(len(ts15), 99.0),
+        "close": np.full(len(ts15), 100.5),
+        "volume": np.full(len(ts15), 2000.0),
+    })
+    target_idx = 430
+    target_ts = ts5[target_idx]
+    ts_n1 = ts5[target_idx - 1]
+    forming_15m_open = ts_n1.floor("15min")
+    # Extreme forming candle that must NOT be visible at target_ts row.
+    df15.loc[df15["timestamp"] == forming_15m_open, "close"] = 400.0
+
+    ts1h = pd.date_range(ts5.min() - pd.Timedelta("24h"), ts5.max() + pd.Timedelta("4h"), freq="1h", tz="UTC")
+    df1h = pd.DataFrame({
+        "timestamp": ts1h,
+        "open": np.full(len(ts1h), 100.0),
+        "high": np.full(len(ts1h), 101.0),
+        "low": np.full(len(ts1h), 99.0),
+        "close": np.full(len(ts1h), 100.2),
+        "volume": np.full(len(ts1h), 5000.0),
+    })
+
+    funding = pd.DataFrame({
+        "timestamp": pd.date_range("2025-12-29", periods=30, freq="8h", tz="UTC"),
+        "funding_rate": np.linspace(0.0001, 0.0002, 30),
+    })
+
+    feat = build_features(df5, df15, df1h, funding)
+
+    row = feat.loc[feat["timestamp"] == target_ts]
+    assert not row.empty, f"Expected feature row for {target_ts}"
+
+    leaked_value = float(row["body_ratio_15m"].iloc[0])
+    assert abs(leaked_value) < 5.0, (
+        "body_ratio_15m appears to include the extreme 00:45 forming 15m candle, "
+        "which would indicate lookahead leakage"
+    )
+
+
+def test_1h_feature_uses_last_closed_candle_not_forming_candle():
+    """1h context must not leak partially formed hourly candle values."""
+    from ml.features import build_features
+
+    ts5 = pd.date_range("2026-01-01 00:00:00", periods=520, freq="5min", tz="UTC")
+    base_close = np.linspace(200.0, 220.0, len(ts5))
+    df5 = pd.DataFrame({
+        "timestamp": ts5,
+        "open": base_close - 0.1,
+        "high": base_close + 0.2,
+        "low": base_close - 0.2,
+        "close": base_close,
+        "volume": np.full(len(ts5), 900.0),
+    })
+
+    ts15 = pd.date_range(ts5.min() - pd.Timedelta("2h"), ts5.max() + pd.Timedelta("2h"), freq="15min", tz="UTC")
+    df15 = pd.DataFrame({
+        "timestamp": ts15,
+        "open": np.full(len(ts15), 200.0),
+        "high": np.full(len(ts15), 201.0),
+        "low": np.full(len(ts15), 199.0),
+        "close": np.full(len(ts15), 200.3),
+        "volume": np.full(len(ts15), 2500.0),
+    })
+
+    ts1h = pd.date_range(ts5.min() - pd.Timedelta("24h"), ts5.max() + pd.Timedelta("6h"), freq="1h", tz="UTC")
+    df1h = pd.DataFrame({
+        "timestamp": ts1h,
+        "open": np.full(len(ts1h), 200.0),
+        "high": np.full(len(ts1h), 201.0),
+        "low": np.full(len(ts1h), 199.0),
+        "close": np.full(len(ts1h), 200.2),
+        "volume": np.full(len(ts1h), 7000.0),
+    })
+    target_idx = 431
+    target_ts = ts5[target_idx]
+    ts_n1 = ts5[target_idx - 1]
+    forming_1h_open = ts_n1.floor("1h")
+    # Extreme forming hourly candle that must not be visible at target_ts row.
+    df1h.loc[df1h["timestamp"] == forming_1h_open, "close"] = 800.0
+
+    funding = pd.DataFrame({
+        "timestamp": pd.date_range("2025-12-29", periods=36, freq="8h", tz="UTC"),
+        "funding_rate": np.linspace(0.00005, 0.00015, 36),
+    })
+
+    feat = build_features(df5, df15, df1h, funding)
+    row = feat.loc[feat["timestamp"] == target_ts]
+    assert not row.empty, f"Expected feature row for {target_ts}"
+
+    leaked_value = float(row["body_ratio_1h"].iloc[0])
+    assert abs(leaked_value) < 5.0, (
+        "body_ratio_1h appears to include the extreme 04:00 forming hourly candle, "
+        "which would indicate lookahead leakage"
+    )
