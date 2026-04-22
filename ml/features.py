@@ -207,9 +207,18 @@ def build_features(
     # 15m features — merge_asof backward on ts_n1
     # -----------------------------------------------------------------------
     atr15 = compute_atr14(df15)
-    df15["body_ratio_15m"] = (df15["close"] - df15["open"]) / atr15
-    df15["dir_15m"] = np.sign(df15["close"] - df15["open"])
-    df15["volume_ratio_15m"] = df15["volume"] / df15["volume"].rolling(20, min_periods=2).mean()
+    # CRITICAL (causality):
+    # ccxt candle timestamps are candle OPEN times. At 12:50 (5m ts_n1), the
+    # 15m candle stamped 12:45 is still forming until 13:00 in live trading.
+    # If we merge unshifted 15m features on ts_n1<=12:45, training sees the
+    # FINAL 12:45-13:00 values (future information), inflating backtest WR and
+    # creating probability mismatch vs live. Shift(1) ensures we only expose
+    # the most recently CLOSED 15m candle at every 5m row.
+    df15["body_ratio_15m"] = ((df15["close"] - df15["open"]) / atr15).shift(1)
+    df15["dir_15m"] = np.sign(df15["close"] - df15["open"]).shift(1)
+    df15["volume_ratio_15m"] = (
+        (df15["volume"] / df15["volume"].rolling(20, min_periods=2).mean()).shift(1)
+    )
 
     r15 = _asof_backward(ts_n1, df15, ["body_ratio_15m", "dir_15m", "volume_ratio_15m"])
     df5["body_ratio_15m"] = r15["body_ratio_15m"].values
@@ -220,10 +229,13 @@ def build_features(
     # 1h features — same merge_asof pattern
     # -----------------------------------------------------------------------
     atr1h = compute_atr14(df1h)
-    df1h["body_ratio_1h"] = (df1h["close"] - df1h["open"]) / atr1h
-    df1h["dir_1h"] = np.sign(df1h["close"] - df1h["open"])
+    # Same causality guard as 15m: 1h timestamp is candle OPEN time, so the
+    # candle stamped at hour H is not closed until H+1h. Shift all 1h features
+    # by one bar so each 5m row only sees fully closed hourly context.
+    df1h["body_ratio_1h"] = ((df1h["close"] - df1h["open"]) / atr1h).shift(1)
+    df1h["dir_1h"] = np.sign(df1h["close"] - df1h["open"]).shift(1)
     ema9 = df1h["close"].ewm(span=9, adjust=False).mean()
-    df1h["ema9_slope_1h"] = (ema9 - ema9.shift(1)) / atr1h
+    df1h["ema9_slope_1h"] = ((ema9 - ema9.shift(1)) / atr1h).shift(1)
 
     r1h = _asof_backward(ts_n1, df1h, ["body_ratio_1h", "dir_1h", "ema9_slope_1h"])
     df5["body_ratio_1h"] = r1h["body_ratio_1h"].values

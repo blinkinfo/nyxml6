@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+from datetime import datetime, timezone
 
 import lightgbm as lgb
 
@@ -82,6 +83,39 @@ def load_metadata(slot: str = "current") -> dict | None:
     except Exception as e:
         log.error("load_metadata: failed to load %s: %s", path, e)
         return None
+
+
+def _parse_train_date(meta: dict | None) -> datetime | None:
+    """Best-effort parse of model metadata train date in UTC."""
+    if not meta:
+        return None
+    raw = meta.get("train_date")
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw))
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def choose_newest_source(
+    *,
+    db_meta: dict | None,
+    disk_meta: dict | None,
+) -> str:
+    """Choose preferred model source when both DB and disk models exist.
+
+    Returns "db" or "disk". If train_date is unavailable or equal, defaults to DB
+    to preserve legacy behaviour.
+    """
+    db_dt = _parse_train_date(db_meta)
+    disk_dt = _parse_train_date(disk_meta)
+    if db_dt is not None and disk_dt is not None:
+        return "disk" if disk_dt > db_dt else "db"
+    return "db"
 
 
 def promote_candidate() -> None:
@@ -242,3 +276,22 @@ async def load_model_from_db(slot: str = "current") -> "lgb.Booster | None":
         return None
     finally:
         os.unlink(tmp_path)
+
+
+async def load_metadata_from_db(slot: str = "current") -> dict | None:
+    """Load metadata JSON for model slot from SQLite model_blobs table."""
+    import json
+    import aiosqlite
+    import config as cfg
+    async with aiosqlite.connect(cfg.DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT metadata FROM model_blobs WHERE slot = ?", (slot,)
+        )
+        row = await cursor.fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        return json.loads(row[0])
+    except Exception as e:
+        log.error("load_metadata_from_db: failed to parse metadata for slot=%s: %s", slot, e)
+        return None

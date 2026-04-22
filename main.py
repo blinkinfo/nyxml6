@@ -179,29 +179,51 @@ def main() -> None:
         # --- Step 4: ML model preload — try DB first, fall back to disk ---
         # Fully non-fatal: a missing/broken model just means signals are skipped
         # until the user runs /retrain. The scheduler MUST still start.
+        #
+        # IMPORTANT:
+        # If DB and disk diverge (e.g. partial save or failed back-fill), choose
+        # the newest model by metadata.train_date instead of blindly preferring DB.
+        # This avoids live inference accidentally running an older model than the
+        # one used in recent retrain/test evaluation.
         try:
             from core.strategies import ml_strategy
             from ml import model_store
-            loaded = await model_store.load_model_from_db("current")
-            if loaded:
-                ml_strategy.set_model(loaded)
-                log.info("Startup: ML model loaded from DB")
-            else:
-                disk_model = model_store.load_model("current")
-                if disk_model:
-                    ml_strategy.set_model(disk_model)
-                    log.info("Startup: ML model loaded from disk (fallback)")
-                    # Back-fill DB so the next redeploy can load from DB (ephemeral disk)
+            db_model = await model_store.load_model_from_db("current")
+            db_meta = await model_store.load_metadata_from_db("current")
+            disk_model = model_store.load_model("current")
+            disk_meta = model_store.load_metadata("current")
+
+            chosen_model = None
+            chosen_source = None
+
+            if db_model and disk_model:
+                chosen_source = model_store.choose_newest_source(
+                    db_meta=db_meta,
+                    disk_meta=disk_meta,
+                )
+                chosen_model = disk_model if chosen_source == "disk" else db_model
+            elif db_model:
+                chosen_model = db_model
+                chosen_source = "db"
+            elif disk_model:
+                chosen_model = disk_model
+                chosen_source = "disk"
+
+            if chosen_model is not None and chosen_source is not None:
+                ml_strategy.set_model(chosen_model)
+                log.info("Startup: ML model loaded from %s", chosen_source.upper())
+
+                # If disk won, sync DB so future restarts remain consistent.
+                if chosen_source == "disk":
                     try:
-                        disk_meta = model_store.load_metadata("current") or {}
-                        await model_store.save_model_to_db(disk_model, "current", disk_meta)
+                        await model_store.save_model_to_db(chosen_model, "current", disk_meta or {})
                         log.info("Startup: disk model back-filled to DB for next redeploy")
                     except Exception:
                         log.exception("Startup: failed to back-fill disk model to DB (non-fatal)")
-                else:
-                    log.warning(
-                        "Startup: No ML model found — signals will be skipped until retrain"
-                    )
+            else:
+                log.warning(
+                    "Startup: No ML model found — signals will be skipped until retrain"
+                )
         except Exception:
             log.exception(
                 "Startup: ML model load failed (non-fatal) — signals will be skipped until retrain"
